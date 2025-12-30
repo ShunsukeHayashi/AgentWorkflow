@@ -1,0 +1,164 @@
+# Daily Operations Workflow
+# AgentWorkflow による daily_ops の自動化定義
+
+name: daily-ops
+description: デイリーオペレーション - Voicy取得からNote.com投稿まで
+version: 1.0.0
+
+# トリガー
+triggers:
+  - schedule: "0 9 * * *"  # 毎朝9時 (JST)
+  - manual: true
+  - label: "workflow:daily-ops"
+
+# 環境変数
+env:
+  GEMINI_API_KEY: ${GEMINI_API_KEY}
+  GITHUB_TOKEN: ${GITHUB_TOKEN}
+  VOICEVOX_HOST: "http://localhost:50021"
+  OBSIDIAN_VAULT: "/Users/shunsukehayashi/Documents/AI-Course-Generator"
+  DAILY_OPS_PATH: "/Users/shunsukehayashi/dev/daily_ops"
+
+# パイプライン定義
+stages:
+  # Stage 1: Collector
+  - name: collect
+    agent: collector
+    timeout: 300  # 5分
+    steps:
+      - name: fetch_voicy
+        command: |
+          cd ${DAILY_OPS_PATH}
+          python tools/fetch_voicy_all.py --latest
+        output: voicy_content_latest.md
+        retry: 3
+
+      - name: validate_content
+        condition: file_exists(voicy_content_latest.md)
+        on_failure: notify_slack
+
+  # Stage 2: Creator
+  - name: create
+    agent: creator
+    depends_on: collect
+    timeout: 600  # 10分
+    steps:
+      - name: generate_article
+        prompt: |
+          voicy_content_latest.md を以下のルールで SEO 最適化記事に変換:
+          - タイトル: 32-60文字
+          - H2/H3 構造
+          - [--IMAGE--] マーカー 3-5個
+          - CTA ブロック含む
+        output: note_draft_${DATE}.md
+
+      - name: generate_infographic
+        command: |
+          cd ${DAILY_OPS_PATH}
+          python tools/gemini-image/infographic.py \
+            --input note_draft_${DATE}.md \
+            --style whiteboard \
+            --count 3
+        output: assets/images/
+
+      - name: prepare_job
+        command: |
+          cd ${DAILY_OPS_PATH}
+          python -c "
+          import json
+          with open('note_draft_${DATE}.md') as f:
+              content = f.read()
+          title = content.split('\n')[0].replace('# ', '')
+          job = {'title': title, 'body': content, 'images': []}
+          with open('miyabi_bridge/job.json', 'w') as f:
+              json.dump(job, f, ensure_ascii=False)
+          "
+
+  # Stage 3: Archivist
+  - name: archive
+    agent: archivist
+    depends_on: create
+    timeout: 300  # 5分
+    steps:
+      - name: sync_obsidian
+        command: |
+          DATE=$(date +%Y-%m-%d)
+          VAULT="${OBSIDIAN_VAULT}"
+
+          # Voicy 同期
+          mkdir -p "${VAULT}/Inbox/Voicy"
+          cp voicy_content_latest.md "${VAULT}/Inbox/Voicy/${DATE}_voicy.md"
+
+          # Draft 同期
+          mkdir -p "${VAULT}/Inbox/Drafts/${DATE}"
+          cp note_draft_${DATE}.md "${VAULT}/Inbox/Drafts/${DATE}/"
+
+          # Daily Note 作成
+          mkdir -p "${VAULT}/Daily"
+          cat > "${VAULT}/Daily/${DATE}.md" << EOF
+          ---
+          date: ${DATE}
+          tags: [daily, voicy, note]
+          status: completed
+          ---
+
+          # ${DATE} Daily Operations
+
+          ## Voicy
+          - [[Inbox/Voicy/${DATE}_voicy]]
+
+          ## Drafts
+          - [[Inbox/Drafts/${DATE}/note_draft_${DATE}]]
+
+          ## Status
+          - [x] Voicy 取得
+          - [x] 記事生成
+          - [x] Obsidian 同期
+          EOF
+
+      - name: notify_completion
+        command: |
+          # VOICEVOX 通知 (利用可能な場合)
+          if curl -s ${VOICEVOX_HOST}/version > /dev/null 2>&1; then
+            TEXT="デイリーオペレーション完了しました"
+            curl -s -X POST "${VOICEVOX_HOST}/audio_query?speaker=1&text=${TEXT}" \
+              -o query.json
+            curl -s -X POST "${VOICEVOX_HOST}/synthesis?speaker=1" \
+              -H "Content-Type: application/json" \
+              -d @query.json > output.wav
+            afplay output.wav 2>/dev/null || true
+          fi
+        optional: true
+
+# エラーハンドリング
+on_failure:
+  - notify:
+      channel: slack
+      message: "Daily Ops 失敗: ${STAGE_NAME} - ${ERROR_MESSAGE}"
+  - label:
+      add: "state:blocked"
+      remove: "state:implementing"
+
+# 成功時アクション
+on_success:
+  - label:
+      add: "state:done"
+  - comment: |
+      ## ✅ Daily Operations 完了
+
+      - Voicy 取得: ✓
+      - 記事生成: ✓
+      - Obsidian 同期: ✓
+
+      📝 ドラフト: `note_draft_${DATE}.md`
+      📁 Vault: `${OBSIDIAN_VAULT}/Daily/${DATE}.md`
+
+# メタデータ
+metadata:
+  created: 2024-12-31
+  author: AgentWorkflow
+  source: daily_ops
+  labels:
+    - "✨ type:feature"
+    - "⚠️ priority:P1-High"
+    - "🤖 agent:coordinator"

@@ -1,0 +1,19 @@
+{
+  "name": "agent-workflow",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Miyabi-powered autonomous development platform",
+  "scripts": {
+    "test": "echo \"No tests yet\"",
+    "mcp:miyabi": "node .claude/mcp-servers/miyabi-integration.js",
+    "mcp:github": "node .claude/mcp-servers/github-enhanced.js",
+    "mcp:ide": "node .claude/mcp-servers/ide-integration.js",
+    "mcp:context": "node .claude/mcp-servers/project-context.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

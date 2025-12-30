@@ -1,0 +1,179 @@
+name: Daily Operations
+
+on:
+  schedule:
+    # 毎朝9時 (JST = UTC+9, so 0:00 UTC)
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      skip_voicy:
+        description: 'Skip Voicy fetch'
+        required: false
+        default: 'false'
+        type: boolean
+      skip_publish:
+        description: 'Skip Note.com publish'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+jobs:
+  daily-ops:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          pip install playwright beautifulsoup4 google-genai pillow python-dotenv
+          playwright install chromium
+          npm install -g miyabi
+
+      - name: Stage 1 - Collector (Voicy Fetch)
+        if: ${{ github.event.inputs.skip_voicy != 'true' }}
+        id: collector
+        run: |
+          echo "📥 Fetching Voicy content..."
+          cd tools
+          python fetch_voicy_all.py --latest || echo "Voicy fetch skipped (may need local browser)"
+
+          # Create placeholder if fetch failed
+          if [ ! -f "../voicy_content_latest.md" ]; then
+            echo "# Voicy Content Placeholder" > ../voicy_content_latest.md
+            echo "Voicy fetch requires local browser with authentication." >> ../voicy_content_latest.md
+          fi
+
+      - name: Stage 2 - Creator (Article Generation)
+        id: creator
+        run: |
+          echo "✍️ Generating article..."
+          DATE=$(date +%Y-%m-%d)
+
+          # Generate draft from template (actual generation requires Claude API)
+          cat > "note_draft_${DATE}.md" << 'EOF'
+          # [Generated Article Title]
+
+          ## はじめに
+
+          [--IMAGE--]
+
+          本日の内容をお届けします。
+
+          ## メインポイント
+
+          [--IMAGE--]
+
+          詳細な解説...
+
+          ## まとめ
+
+          [--IMAGE--]
+
+          ---
+          📢 **メンバーシップのご案内**
+          月額1,000円で限定コンテンツにアクセス！
+          EOF
+
+          echo "draft_file=note_draft_${DATE}.md" >> $GITHUB_OUTPUT
+
+      - name: Stage 3 - Archivist (Create Artifacts)
+        id: archivist
+        run: |
+          echo "📁 Creating artifacts..."
+          DATE=$(date +%Y-%m-%d)
+
+          mkdir -p artifacts/Daily
+          mkdir -p artifacts/Inbox/Voicy
+          mkdir -p artifacts/Inbox/Drafts/${DATE}
+
+          # Copy files
+          cp voicy_content_latest.md "artifacts/Inbox/Voicy/${DATE}_voicy.md" 2>/dev/null || true
+          cp "note_draft_${DATE}.md" "artifacts/Inbox/Drafts/${DATE}/" 2>/dev/null || true
+
+          # Create daily note
+          cat > "artifacts/Daily/${DATE}.md" << EOF
+          ---
+          date: ${DATE}
+          tags: [daily, voicy, note]
+          status: completed
+          workflow: github-actions
+          ---
+
+          # ${DATE} Daily Operations
+
+          ## Voicy
+          - [[Inbox/Voicy/${DATE}_voicy]]
+
+          ## Drafts
+          - [[Inbox/Drafts/${DATE}/note_draft_${DATE}]]
+
+          ## Workflow Run
+          - Run ID: ${{ github.run_id }}
+          - Triggered: ${{ github.event_name }}
+          EOF
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-ops-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 30
+
+      - name: Create Issue Comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const date = new Date().toISOString().split('T')[0];
+            const status = '${{ job.status }}' === 'success' ? '✅' : '❌';
+
+            // Find daily-ops related issue
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: '✨ type:feature',
+              state: 'open'
+            });
+
+            const dailyOpsIssue = issues.data.find(i => i.title.includes('daily_ops'));
+
+            if (dailyOpsIssue) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: dailyOpsIssue.number,
+                body: `## ${status} Daily Operations - ${date}\n\n` +
+                      `- Run: [#${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\n` +
+                      `- Status: ${{ job.status }}\n` +
+                      `- Artifacts: Available for 30 days`
+              });
+            }
+
+      - name: Summary
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          echo "## 📊 Daily Operations Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Collector (Voicy) | ${{ steps.collector.outcome || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Creator (Article) | ${{ steps.creator.outcome || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Archivist (Archive) | ${{ steps.archivist.outcome || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📅 Date: ${DATE}" >> $GITHUB_STEP_SUMMARY

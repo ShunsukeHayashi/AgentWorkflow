@@ -1,0 +1,29 @@
+# インフォグラフィック設定例
+# Usage: python infographic.py --yaml example_config.yaml
+
+concept: "Dockerコンテナの仕組み"
+
+style: notebook  # notebook / whiteboard / minimal
+
+aspect_ratio: "16:9"
+image_size: "2K"
+
+output: "docker_infographic.png"
+
+labels:
+  - text: "コンテナ"
+    target: "isolated boxes representing containers"
+  - text: "ホストOS"
+    target: "the base layer"
+  - text: "Docker Engine"
+    target: "the middle management layer"
+  - text: "アプリ"
+    target: "applications inside containers"
+
+annotation: "各コンテナは独立！他のコンテナに影響しない"
+
+custom_elements: |
+  - Show containers as separate rooms in a building
+  - Each room has different furniture (representing different app environments)
+  - Building foundation represents the host OS
+  - A friendly stick figure character pointing at the containers
